@@ -86,12 +86,21 @@ SEGMENT_TABLE_PROMPT = """⚠️ PRINCÍPIO: GERE UM HTML A PARTIR DA IMAGEM. DE
 - Copiar linhas
 - Assumir que cor = ausência de texto
 
-**Formato obrigatório:**
+# Formato de saída obrigatório:**
 {
   "type": "table",
   "format": "html",
   "title": "Título exato ou inferido",
   "html": "<table>...</table>",
+  "notes": "Notas específicas (opcional)"
+}
+## CASO IDENTIFIQUE MAIS DE UMA TABELA O RESULTADO DEVE:
+**Formato obrigatório:**
+{
+  "type": "table",
+  "format": "html",
+  "title": "Título exato ou inferido",
+  "html": "<table>TABELA 1</table>/n<table>TABELA 2</table>",
   "notes": "Notas específicas (opcional)"
 }
 

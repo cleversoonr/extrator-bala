@@ -303,23 +303,18 @@ def _process_single_page(
     if config.force_reprocess:
         logger.info("🔄 Página %s será REPROCESSADA (force_reprocess=True)", page.page_number)
 
-    # Copia imagem da página para o diretório de saída
-    full_page_path = page_out / "page-full.png"
-    bgr = cv2.imread(page.path.as_posix())
-    if bgr is None:
-        logger.warning("Falha ao carregar imagem da página %s", page.page_number)
-        return page_outputs, page_summary
-    
-    cv2.imwrite(full_page_path.as_posix(), bgr)
-
-    # ETAPA 1: Pre-check com LLM barata (identifica tipo e quantidade)
+    # ═══════════════════════════════════════════════════════════════════════════
+    # ETAPA 1: Pre-check DIRETO na imagem renderizada (SEM copiar ainda!)
+    # ═══════════════════════════════════════════════════════════════════════════
     logger.info(
         "🚦 Página %s → pre-check ativo? %s (modelo=%s)",
         page_id,
         "sim" if config.use_cheap_precheck and config.cheap_model else "não",
         config.cheap_model or "n/a",
     )
-    has_content, content_type, content_count, rotation, characteristics = _page_level_precheck(full_page_path, config)
+    
+    # 🎯 PRE-CHECK USA IMAGEM ORIGINAL (pages/page-XXX.png) - NÃO COPIA AINDA!
+    has_content, content_type, content_count, rotation, characteristics = _page_level_precheck(page.path, config)
     logger.info(
         "📋 Resultado do pre-check (página %s): has_content=%s | type=%s | count=%s | rotation=%s°",
         page_id,
@@ -329,10 +324,10 @@ def _process_single_page(
         rotation,
     )
     
-    # ✅ VERIFICAÇÃO CRÍTICA: Se não tem conteúdo útil, PULA TUDO
+    # ✅ VERIFICAÇÃO CRÍTICA: Se não tem conteúdo útil, PULA TUDO (sem copiar!)
     if not has_content or content_type == "text_only" or content_count == 0:
         logger.info(
-            "⏭️  Página %s: sem conteúdo útil (has_content=%s, type=%s, count=%d) → PULANDO",
+            "⏭️  Página %s: sem conteúdo útil (has_content=%s, type=%s, count=%d) → PULANDO (sem copiar!)",
             page.page_number,
             has_content,
             content_type,
@@ -352,6 +347,22 @@ def _process_single_page(
         }
         (page_out / "precheck.json").write_text(_json_dumps(precheck_snapshot), encoding="utf-8")
         return page_outputs, page_summary
+    
+    # ═══════════════════════════════════════════════════════════════════════════
+    # ETAPA 2: Página TEM CONTEÚDO → SÓ AGORA copia para processamento
+    # ═══════════════════════════════════════════════════════════════════════════
+    logger.info("✅ Página %s TEM CONTEÚDO → copiando para processamento", page.page_number)
+    full_page_path = page_out / "page-full.png"
+    bgr = cv2.imread(page.path.as_posix())
+    if bgr is None:
+        logger.warning("Falha ao carregar imagem da página %s", page.page_number)
+        return page_outputs, page_summary
+    
+    cv2.imwrite(full_page_path.as_posix(), bgr)
+    logger.debug("📄 Imagem copiada: %s → %s (%.1f MB)", 
+                page.path.name, 
+                full_page_path.name,
+                full_page_path.stat().st_size / (1024 * 1024))
     
     # DECISÃO INTELIGENTE: Usar OCR ou não? (baseado na QUANTIDADE de elementos)
     use_ocr_decision, ocr_reason = _should_use_ocr(content_count, characteristics)
