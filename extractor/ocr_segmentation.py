@@ -52,23 +52,15 @@ class SegmentedElement:
 # PROMPTS (específicos para segmentos)
 # =============================================================================
 
-SEGMENT_TABLE_PROMPT = """⚠️ PRINCÍPIO: Extraia EXATAMENTE como está. Use a LEGENDA como referência.
-
-Esta imagem é um recorte contendo EXATAMENTE 1 tabela.
+SEGMENT_TABLE_PROMPT = """⚠️ PRINCÍPIO: GERE UM HTML A PARTIR DA IMAGEM. DEVE SER EXATAMENTE IGUAL A IMAGEM.
 
 **INSTRUÇÕES GERAIS:**
 - Use HTML completo `<table>` preservando colspan/rowspan
 - Título deve ser o TEXTO visível na própria tabela (se houver). Se não houver, infira um título breve com base no conteúdo.
-- **CAPTURE A LEGENDA/NOTA** que está VISÍVEL neste recorte (ex: "C = verde", "Fonte: JACOB 1989", etc.) e coloque em `"notes"`
 
 **⚠️ TRANSCRIÇÃO EXATA - REGRA ABSOLUTA:**
 
 **VOCÊ DEVE LER E TRANSCREVER O TEXTO ESCRITO EM CADA CÉLULA.**
-
-**ATENÇÃO: LETRAS PEQUENAS!**
-- Células podem ter letras MUITO PEQUENAS (C, CL, I, etc.)
-- Amplie mentalmente, foque, leia com cuidado
-- TODAS as células coloridas geralmente têm texto - não deixe vazias sem verificar!
 
 **PROCEDIMENTO OBRIGATÓRIO:**
 
@@ -106,7 +98,7 @@ Esta imagem é um recorte contendo EXATAMENTE 1 tabela.
 Retorne somente JSON válido."""
 
 
-CHART_PROMPT = """⚠️ PRINCÍPIO: Extraia EXATAMENTE os dados visíveis. NÃO invente, NÃO force padrões.
+CHART_PROMPT = """⚠️ PRINCÍPIO: PRINCÍPIO: GERE UM JSON A PARTIR DA IMAGEM.
 
 Extraia dados deste GRÁFICO como JSON.
 
@@ -506,16 +498,29 @@ def segment_page_elements(
         logger.warning("PPStructure retornou formato inesperado (%s)", type(layout_results))
         return []
 
+    # 🔍 LOG DETALHADO: Mostra TODOS os elementos detectados pelo PaddleOCR
+    logger.info("🔎 PaddleOCR detectou %d elementos RAW (antes de filtrar):", len(layout_results))
+    for idx, item in enumerate(layout_results, 1):
+        raw_type = str(item.get("type", "unknown"))
+        bbox = item.get("bbox", [])
+        score = item.get("score", 0.0)
+        logger.info("   %d. tipo='%s' bbox=%s score=%.2f", idx, raw_type, bbox, score)
+    
+    logger.info("🎯 Filtrando por tipos aceitos: %s (content_type='%s')", keep_types, content_type)
+
     for item in layout_results:
         layout_type = str(item.get("type", "")).lower()
         mapped_type = _map_layout_type(layout_type)
         if mapped_type is None:
+            logger.debug("   ❌ Descartado: tipo='%s' (não mapeado)", layout_type)
             continue
         if keep_types and mapped_type not in keep_types:
+            logger.warning("   ❌ Descartado: tipo='%s' (não está em %s)", layout_type, keep_types)
             continue
 
         bbox = item.get("bbox")
         if not bbox or len(bbox) != 4:
+            logger.debug("   ❌ Descartado: bbox inválido %s", bbox)
             continue
         x1, y1, x2, y2 = [int(v) for v in bbox]
         padded_bbox = _apply_padding_to_bbox(
@@ -526,9 +531,12 @@ def segment_page_elements(
         )
         crop = _crop_image(bgr, padded_bbox)
         if crop is None:
+            logger.debug("   ❌ Descartado: falha ao recortar bbox %s", padded_bbox)
             continue
         crop = _enhance_segment_image(crop)
 
+        logger.info("   ✅ ACEITO: tipo='%s' → mapped='%s' bbox=%s", layout_type, mapped_type, padded_bbox)
+        
         raw_segments.append(
             {
                 "image": crop,
@@ -542,7 +550,12 @@ def segment_page_elements(
             break
 
     if not raw_segments:
-        logger.info("PPStructure não encontrou segmentos relevantes (%s)", content_type)
+        logger.warning("🚨 PPStructure NÃO encontrou segmentos relevantes!")
+        logger.warning("   → Tipo esperado: %s", content_type)
+        logger.warning("   → Pre-check detectou: %d elementos", expected_count)
+        logger.warning("   → PaddleOCR detectou: %d elementos RAW", len(layout_results) if layout_results else 0)
+        logger.warning("   → Após filtro: 0 elementos")
+        logger.warning("   💡 SOLUÇÃO: Verifique os logs acima para ver quais tipos foram descartados")
         return []
 
     raw_segments.sort(key=_segment_reading_order_key)
@@ -562,13 +575,15 @@ def segment_page_elements(
         )
 
     if expected_count and len(segments) != expected_count:
-        logger.info(
-            "PPStructure detectou %d elemento(s) vs pre-check %d",
+        logger.warning(
+            "⚠️  DIVERGÊNCIA: PPStructure detectou %d elemento(s) vs pre-check %d",
             len(segments),
             expected_count,
         )
+        logger.warning("   💡 Isso pode causar problemas na extração!")
+    else:
+        logger.info("✅ PPStructure segmentou %d elemento(s) (bate com pre-check)", len(segments))
 
-    logger.info("PPStructure segmentou %d elemento(s)", len(segments))
     return segments
 
 
