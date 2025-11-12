@@ -56,15 +56,50 @@ O sistema agora reduz automaticamente imagens grandes antes de enviar para a API
 - Downscale automático mantendo legibilidade mínima de 800px
 - Logs detalhados do processo de redução
 
-## Melhorias na Extração de Tabelas Múltiplas
-O sistema foi aprimorado para detectar e extrair corretamente páginas com **múltiplas tabelas separadas**:
-- ✅ Detecta automaticamente quando há 2+ tabelas fisicamente separadas
-- ✅ Cria um arquivo separado para cada tabela (table-01.xlsx, table-02.xlsx, etc.)
-- ✅ Não mistura tabelas diferentes em um único HTML
-- ✅ Evita linhas vazias artificiais (`<td colspan="X"></td>`)
+## Melhorias na Extração de Tabelas Múltiplas (NOVA VERSÃO)
 
-**Como reprocessar páginas com erro de formatação:**
-1. Identifique a página com problema (ex: `page-100`)
-2. Delete a pasta `output/NOME_PDF/llm_tables/page-100/`
-3. Execute novamente: `python -m extractor`
-4. Apenas a página deletada será reprocessada (checkpoint automático)
+O sistema foi **completamente reformulado** com 4 camadas de proteção:
+
+### 🛡️ 4 Camadas de Proteção Anti-Erro
+
+**1. Conversão P&B Automática**
+- Converte imagem para preto e branco antes de enviar
+- Melhora contraste e legibilidade de bordas/texto
+- Threshold adaptativo para tabelas
+
+**2. Prompt Ultra-Específico**
+- Quando detecta 2+ tabelas, adiciona aviso crítico no prompt
+- Especifica EXATAMENTE quantos objetos criar no JSON
+- Avisa que resposta será rejeitada se errar
+
+**3. Validação Pós-Extração**
+- Detecta automaticamente quando tabelas foram mescladas incorretamente
+- Conta células vazias (se >30%, é erro de mesclagem)
+- Compara quantidade esperada vs extraída
+
+**4. Retry Inteligente**
+- Se detecta erro, tenta novamente com prompt ainda mais agressivo
+- Usa imagem P&B otimizada
+- Só aceita resposta se quantidade bater
+
+### 📊 Resultados Esperados
+
+**Antes:**
+- Mesclava 2 tabelas em 1 com células vazias ❌
+- 26 colunas onde deveria ter 2 tabelas separadas ❌
+- Dados na posição errada ❌
+
+**Depois:**
+- 2 objetos separados no JSON ✅
+- Cada tabela com suas próprias colunas ✅
+- Dados corretos em cada posição ✅
+
+### 🔄 Como Reprocessar Páginas com Erro
+
+```bash
+# 1. Delete a pasta da página problemática
+rm -rf output/NOME_PDF/llm_tables/page-100/
+
+# 2. Execute novamente (só essa página será reprocessada)
+python -m extractor
+```

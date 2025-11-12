@@ -831,8 +831,144 @@ def _write_segments_manifest(page_out: Path, segments: List[SegmentedElement]) -
 
 
 # =============================================================================
+# FUNÇÕES DE PRÉ-PROCESSAMENTO DE IMAGEM
+# =============================================================================
+
+def _convert_to_grayscale(image_path: Path) -> Path:
+    """
+    Converte imagem para escala de cinza (preto e branco) para melhor contraste.
+    Salva no mesmo diretório com sufixo -bw.png
+    
+    Args:
+        image_path: Caminho da imagem original
+    
+    Returns:
+        Caminho da imagem em preto e branco
+    """
+    bw_path = image_path.parent / f"{image_path.stem}-bw.png"
+    
+    # Se já existe, retorna (checkpoint)
+    if bw_path.exists() and bw_path.stat().st_size > 0:
+        logger.debug("✅ Imagem P&B já existe: %s", bw_path.name)
+        return bw_path
+    
+    try:
+        # Carrega e converte para escala de cinza
+        img = cv2.imread(str(image_path))
+        if img is None:
+            logger.warning("Falha ao carregar imagem para conversão P&B, usando original")
+            return image_path
+        
+        # Converte para grayscale
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        
+        # Aplica threshold adaptativo para melhor contraste em tabelas
+        # Isso ajuda a tornar texto e bordas mais nítidos
+        gray = cv2.adaptiveThreshold(
+            gray, 255, 
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+            cv2.THRESH_BINARY, 
+            11, 2
+        )
+        
+        # Salva imagem P&B
+        cv2.imwrite(str(bw_path), gray)
+        logger.info("📸 Imagem convertida para P&B: %s", bw_path.name)
+        return bw_path
+        
+    except Exception as e:
+        logger.warning("Erro ao converter para P&B: %s. Usando imagem original.", e)
+        return image_path
+
+
+# =============================================================================
 # EXTRAÇÃO PRINCIPAL
 # =============================================================================
+
+def _extract_tables_from_payload(payload: dict) -> List[dict]:
+    """
+    Extrai lista de tabelas do payload, independente do formato.
+    
+    Returns:
+        Lista de dicionários representando cada tabela
+    """
+    if not payload:
+        return []
+    
+    payload_type = payload.get("type")
+    
+    if payload_type == "table_set":
+        return payload.get("tables", [])
+    elif payload_type == "table":
+        return [payload]
+    elif payload_type == "chart":
+        return [payload]
+    
+    return []
+
+
+def _call_full_page_llm_with_retry(
+    page_image_path: Path,
+    page_id: str,
+    config: ImageProcessingConfig,
+    content_type: str,
+    content_count: int,
+    characteristics: dict = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    Versão com retry ultra-agressivo quando detecta mesclagem incorreta de tabelas.
+    Usa prompt extremamente específico e direto.
+    """
+    logger.warning("🔥 RETRY COM PROMPT ULTRA-AGRESSIVO")
+    
+    # Converte para P&B
+    bw_image_path = _convert_to_grayscale(page_image_path)
+    
+    # Prompt ultra-específico
+    ultra_prompt = f"""⚠️⚠️⚠️ ATENÇÃO MÁXIMA ⚠️⚠️⚠️
+
+Esta página tem EXATAMENTE {content_count} TABELAS SEPARADAS.
+
+SEU TRABALHO: Criar {content_count} objetos SEPARADOS no array "tables".
+
+VOCÊ ESTÁ FALHANDO se criar apenas 1 objeto!
+
+FORMATO OBRIGATÓRIO:
+{{
+  "type": "table_set",
+  "tables": [
+    {{"title": "Primeira tabela", "format": "html", "html": "<table>...</table>", "notes": ""}},
+    {{"title": "Segunda tabela", "format": "html", "html": "<table>...</table>", "notes": ""}}
+  ]
+}}
+
+INSTRUÇÕES:
+1. Olhe a imagem: há {content_count} blocos de tabela FISICAMENTE SEPARADOS
+2. Cada bloco = 1 entrada no array "tables"
+3. Cada entrada tem seu próprio HTML <table>...</table>
+4. NÃO crie 1 HTML gigante com linhas vazias
+
+IMPORTANTE: Se você retornar menos de {content_count} objetos, sua resposta será REJEITADA.
+
+Retorne APENAS JSON válido."""
+    
+    try:
+        return call_openai_vision_json(
+            bw_image_path,
+            model=config.model,
+            provider=config.provider,
+            api_key=config.api_key,
+            azure_endpoint=config.azure_endpoint,
+            azure_api_version=config.azure_api_version,
+            openrouter_api_key=config.openrouter_api_key,
+            locale=config.locale,
+            instructions=ultra_prompt,
+            max_retries=1,  # Só 1 retry aqui
+        )
+    except Exception as e:
+        logger.error("Erro no retry: %s", e)
+        return None
+
 
 def _call_full_page_llm(
     page_image_path: Path,
@@ -848,6 +984,9 @@ def _call_full_page_llm(
         content_count,
         "elemento(s)",
     )
+    
+    # 🔧 SOLUÇÃO 1: Converte para preto e branco para melhor contraste
+    bw_image_path = _convert_to_grayscale(page_image_path)
 
     if content_type == "chart":
         base_prompt = CHART_PROMPT
@@ -871,6 +1010,35 @@ Retorne TODAS as {content_count} elementos como entradas separadas no array "tab
     else:
         count_desc = _format_count_description("table", content_count or 1)
         base_prompt = PAGE_TABLE_PROMPT.format(count_desc=count_desc)
+        
+        # 🔧 SOLUÇÃO 2: Prompt ultra-específico quando há múltiplas tabelas
+        if content_count and content_count > 1:
+            base_prompt += f"""
+
+⚠️⚠️⚠️ ATENÇÃO CRÍTICA ⚠️⚠️⚠️
+
+Esta página tem EXATAMENTE {content_count} TABELAS FISICAMENTE SEPARADAS.
+
+**VOCÊ DEVE:**
+1. Criar {content_count} objetos SEPARADOS no array "tables"
+2. CADA tabela = 1 objeto com seu próprio HTML
+3. NÃO juntar tabelas diferentes em um único HTML
+4. NÃO criar linhas vazias para separar seções
+
+**FORMATO OBRIGATÓRIO:**
+{{
+  "type": "table_set",
+  "tables": [
+    {{"title": "Tabela 1", "format": "html", "html": "<table>...</table>", "notes": ""}},
+    {{"title": "Tabela 2", "format": "html", "html": "<table>...</table>", "notes": ""}}
+    // ... até {content_count} objetos
+  ]
+}}
+
+🚫 ERRADO: 1 objeto com HTML gigante contendo todas as tabelas
+✅ CORRETO: {content_count} objetos, cada um com seu próprio HTML
+
+Se você criar apenas 1 objeto quando existem {content_count} tabelas, a extração FALHARÁ."""
     
     # PROMPT PERSONALIZADO: Gera instruções específicas baseadas nas características
     if characteristics:
@@ -881,8 +1049,9 @@ Retorne TODAS as {content_count} elementos como entradas separadas no array "tab
     else:
         prompt = base_prompt
 
+    # 🔧 USA IMAGEM EM PRETO E BRANCO para melhor contraste
     return call_openai_vision_json(
-        page_image_path,
+        bw_image_path,  # ← Usa versão P&B em vez da colorida
         model=config.model,
         provider=config.provider,
         api_key=config.api_key,
@@ -987,6 +1156,53 @@ def _llm_page_to_tables(
     if not payload:
         logger.warning("GPT-5 não retornou dados para página %s", page_id)
         return outputs, summaries
+    
+    # 🔧 SOLUÇÃO 3: Validação pós-extração - detecta tabelas incorretamente mescladas
+    if expected_elements > 1 and content_type == "table":
+        extracted_count = len(_extract_tables_from_payload(payload))
+        
+        # Se esperava N tabelas mas gerou apenas 1, pode ter mesclado incorretamente
+        if extracted_count == 1:
+            # Verifica se a única tabela tem colunas vazias demais (sinal de mesclagem)
+            single_table = _extract_tables_from_payload(payload)[0] if _extract_tables_from_payload(payload) else None
+            if single_table:
+                html_content = single_table.get("html", "")
+                # Conta células vazias no HTML
+                empty_cells = html_content.count("<td></td>")
+                total_cells = html_content.count("<td")
+                
+                if total_cells > 0 and (empty_cells / total_cells) > 0.3:  # Mais de 30% vazias
+                    logger.error(
+                        "❌ ERRO DETECTADO: Esperava %d tabelas mas gerou 1 com %.1f%% células vazias",
+                        expected_elements,
+                        (empty_cells / total_cells) * 100
+                    )
+                    logger.warning("🔄 Tentando novamente com prompt ainda mais específico...")
+                    
+                    # Tenta novamente com prompt ultra-agressivo
+                    retry_payload = _call_full_page_llm_with_retry(
+                        page_image_path,
+                        page_id,
+                        config,
+                        content_type,
+                        expected_elements,
+                        characteristics,
+                    )
+                    
+                    if retry_payload:
+                        retry_count = len(_extract_tables_from_payload(retry_payload))
+                        if retry_count == expected_elements:
+                            logger.info("✅ Retry bem-sucedido! Extraídas %d tabelas", retry_count)
+                            payload = retry_payload
+                        else:
+                            logger.warning("⚠️ Retry também falhou. Mantendo resultado original.")
+        
+        elif extracted_count != expected_elements:
+            logger.warning(
+                "⚠️ Divergência: esperava %d tabelas, extraiu %d",
+                expected_elements,
+                extracted_count
+            )
 
     if segments and payload.get("mode") is None:
         payload["mode"] = "segmented"
