@@ -25,7 +25,7 @@ def _env_any(*names: str, default: str | None = None) -> str | None:
     return default
 
 
-def _env_flag(name: str, default: bool = False) -> bool:
+def _env_flag(name: str, default: bool | None = False) -> bool | None:
     val = os.getenv(name)
     if val is None:
         return default
@@ -318,10 +318,32 @@ def main() -> None:
     print("Detectando melhor modelo automaticamente...")
     cheap_model, cheap_provider, cheap_endpoint, cheap_api_version, cheap_api_key = _auto_detect_precheck_model(llm_cfg)
     
+    # 3. Converter páginas text-only? (Opcional)
+    print("\n[bold cyan]═══ Páginas Text-Only ═══[/bold cyan]")
+    print("Páginas sem tabelas/gráficos (ex: sumários, referências, introduções)")
+    print("podem ser convertidas em HTML usando GPT-5.")
+    print("\n[yellow]⚠️  Isso aumenta o custo (1 chamada GPT-5 por página text-only)[/yellow]")
+    
+    # Verifica se há flag no .env primeiro
+    convert_text_only_env = _env_flag("CONVERT_TEXT_ONLY", default=None)
+    if convert_text_only_env is not None:
+        convert_text_only = convert_text_only_env
+        status = "✅ ATIVADO" if convert_text_only else "❌ DESATIVADO"
+        print(f"\n📄 CONVERT_TEXT_ONLY definido no .env: {status}")
+    else:
+        convert_text_only = Confirm.ask(
+            "📄 Converter páginas text-only em HTML?",
+            default=False
+        )
+    
     print("\n[bold green]✅ Configuração concluída![/bold green]")
     print(f"   🧠 Extração: {extraction_model} via {extraction_provider}")
     print(f"   🤖 Pre-check: {cheap_model} via {cheap_provider} [dim](automático)[/dim]")
     print(f"   🔧 OCR: [yellow]Decisão AUTOMÁTICA[/yellow] (baseado em quantidade de elementos)")
+    if convert_text_only:
+        print(f"   📄 Text-only: [green]Converter em HTML[/green]")
+    else:
+        print(f"   📄 Text-only: [dim]Ignorar[/dim]")
     
     # ═══════════════════════════════════════════════════════════════
     
@@ -372,13 +394,6 @@ def main() -> None:
         logger.warning("⚠️  FORCE_REPROCESS ativado - todas as páginas serão reprocessadas")
     else:
         logger.info("✅ Checkpoint ativado - páginas já processadas serão puladas")
-    
-    # CONVERT_TEXT_ONLY: Controla se deve converter páginas text-only em HTML
-    convert_text_only = _env_flag("CONVERT_TEXT_ONLY", default=False)
-    if convert_text_only:
-        logger.info("📄 CONVERT_TEXT_ONLY ativado - páginas text-only serão convertidas em HTML (usando GPT-5)")
-    else:
-        logger.info("⏭️  CONVERT_TEXT_ONLY desativado - páginas text-only serão ignoradas")
 
     for pdf in sel:
         logger.info("Processando %s", pdf)
