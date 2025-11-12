@@ -42,18 +42,6 @@ PAGE_TABLE_PROMPT = """Extraia EXATAMENTE como está na imagem. Esta página con
   ]
 }}
 
-**⚠️ IDENTIFICAÇÃO DE TABELAS MÚLTIPLAS:**
-Se vê MÚLTIPLAS tabelas fisicamente SEPARADAS (com espaço/borda entre elas):
-- Crie uma entrada SEPARADA para CADA tabela
-- NÃO junte tabelas diferentes em um único HTML
-- CADA tabela = um objeto no array "tables"
-
-**Sinais de tabelas SEPARADAS:**
-1. Espaço vertical significativo entre blocos
-2. Bordas/linhas divisórias completas
-3. Headers/colunas completamente DIFERENTES
-4. Mesma primeira coluna (ex: "Prof") mas resto diferente
-
 **HTML `<table>` preservando estrutura:**
 - Estrutura: `<table><thead>...</thead><tbody>...</tbody></table>`
 - Células mescladas: `colspan="N"` (horizontal) ou `rowspan="N"` (vertical)
@@ -62,33 +50,13 @@ Se vê MÚLTIPLAS tabelas fisicamente SEPARADAS (com espaço/borda entre elas):
 - Sub-cabeçalhos: Use `<tr>` adicional dentro do `<thead>`
 
 **REGRAS CRÍTICAS:**
-1. Leia CADA célula individualmente (amplie zoom mental em letras pequenas)
+1. Leia CADA célula individualmente 
 2. Transcreva EXATAMENTE o texto escrito (C, CL, I, números, etc.)
 3. Preserve colspan/rowspan onde células ocupam múltiplas colunas/linhas
 4. NÃO copie linhas (cada célula é única)
 5. Se célula vazia → `<td></td>`
 6. **NÃO invente linhas vazias com `<td colspan="14"></td>`** - isso quebra a estrutura
 7. Se são tabelas SEPARADAS visualmente → crie objetos SEPARADOS no JSON
-8. 🚫 **NUNCA coloque `<th>` dentro do `<tbody>`** - headers só no `<thead>`!
-
-**EXEMPLO de 2 tabelas SEPARADAS:**
-{{
-  "type": "table_set",
-  "tables": [
-    {{
-      "title": "Tabela Superior",
-      "format": "html",
-      "html": "<table><thead>...</thead><tbody>...</tbody></table>",
-      "notes": ""
-    }},
-    {{
-      "title": "Tabela Inferior",
-      "format": "html",
-      "html": "<table><thead>...</thead><tbody>...</tbody></table>",
-      "notes": ""
-    }}
-  ]
-}}
 
 Retorne APENAS JSON válido."""
 
@@ -361,6 +329,30 @@ def _process_single_page(
         rotation,
     )
     
+    # ✅ VERIFICAÇÃO CRÍTICA: Se não tem conteúdo útil, PULA TUDO
+    if not has_content or content_type == "text_only" or content_count == 0:
+        logger.info(
+            "⏭️  Página %s: sem conteúdo útil (has_content=%s, type=%s, count=%d) → PULANDO",
+            page.page_number,
+            has_content,
+            content_type,
+            content_count,
+        )
+        # Salva snapshot de página pulada
+        precheck_snapshot = {
+            "model": config.cheap_model if config.use_cheap_precheck else None,
+            "provider": config.cheap_provider if config.use_cheap_precheck else None,
+            "has_content": has_content,
+            "content_type": content_type,
+            "content_count": content_count,
+            "rotation_detected": rotation,
+            "characteristics": characteristics,
+            "ocr_decision": "skip",
+            "ocr_reason": "Página sem conteúdo útil (text_only ou count=0)",
+        }
+        (page_out / "precheck.json").write_text(_json_dumps(precheck_snapshot), encoding="utf-8")
+        return page_outputs, page_summary
+    
     # DECISÃO INTELIGENTE: Usar OCR ou não? (baseado na QUANTIDADE de elementos)
     use_ocr_decision, ocr_reason = _should_use_ocr(content_count, characteristics)
     logger.info("🧠 Decisão de OCR: %s → %s", "USAR" if use_ocr_decision else "NÃO USAR", ocr_reason)
@@ -387,14 +379,6 @@ def _process_single_page(
         "ocr_reason": ocr_reason,
     }
     (page_out / "precheck.json").write_text(_json_dumps(precheck_snapshot), encoding="utf-8")
-
-    if not has_content:
-        logger.info(
-            "Página %s: sem conteúdo útil (type=%s), pulando",
-            page.page_number,
-            content_type,
-        )
-        return page_outputs, page_summary
 
     # Extrai notas/legendas da PÁGINA INTEIRA (modelo barato)
     page_notes = _extract_page_notes(full_page_path, config)
@@ -485,7 +469,7 @@ def _correct_image_rotation(image_path: Path, rotation: int, output_dir: Path) -
 
 def _should_use_ocr(content_count: int, characteristics: dict) -> tuple[bool, str]:
     """
-    DECISÃO: SEMPRE usar OCR para segmentar antes de enviar para LLM.
+    DECISÃO: Usar OCR para segmentar antes de enviar para LLM.
     
     MOTIVO:
     - Letras/números pequenos na página inteira são difíceis para LLM ler
@@ -494,8 +478,10 @@ def _should_use_ocr(content_count: int, characteristics: dict) -> tuple[bool, st
     - Resultado: extração mais precisa
     
     Retorna: (use_ocr: bool, reason: str)
+    
+    NOTA: Esta função só é chamada APÓS validar que a página tem conteúdo útil
+    (has_content=True, content_type != "text_only", content_count > 0)
     """
-    # SEMPRE usa OCR (independente da quantidade de elementos)
     if content_count <= 1:
         return True, f"1 elemento detectado → usar OCR para recortar e ampliar (letras pequenas ficam mais legíveis)"
     else:
