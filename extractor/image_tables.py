@@ -131,6 +131,7 @@ class ImageProcessingConfig:
     max_segments: Optional[int] = None
     fallback_to_full_page: bool = True
     force_reprocess: bool = False  # Se True, reprocessa mesmo páginas já extraídas
+    convert_text_only: bool = False  # Se True, converte páginas text-only em HTML
     
     def __post_init__(self):
         if self.skip_ocr_pages is None:
@@ -324,8 +325,56 @@ def _process_single_page(
         rotation,
     )
     
-    # ✅ VERIFICAÇÃO CRÍTICA: Se não tem conteúdo útil, PULA TUDO (sem copiar!)
+    # ✅ VERIFICAÇÃO CRÍTICA: Se não tem conteúdo útil, PULA ou CONVERTE TEXTO
     if not has_content or content_type == "text_only" or content_count == 0:
+        # 📝 CASO ESPECIAL: Se text_only E convert_text_only=True, converte texto
+        if content_type == "text_only" and config.convert_text_only:
+            logger.info(
+                "📄 Página %s: text-only com CONVERT_TEXT_ONLY ativado → extraindo texto completo",
+                page.page_number,
+            )
+            
+            # Importa módulo de extração de texto
+            from .text_extraction import extract_text_from_page
+            
+            # Extrai texto completo usando GPT-5
+            html_path, summary_entry = extract_text_from_page(
+                page.path,  # Usa imagem original (não copia!)
+                page_out,
+                page_id,
+                config.model,  # Usa GPT-5 (modelo principal)
+                config.provider,
+                config.api_key,
+                config.azure_endpoint,
+                config.azure_api_version,
+                config.openrouter_api_key,
+                config.locale,
+            )
+            
+            if html_path and summary_entry:
+                page_outputs.append(html_path)
+                page_summary.append(summary_entry)
+                logger.info("✅ Texto extraído com sucesso da página %s", page.page_number)
+            else:
+                logger.warning("⚠️ Falha ao extrair texto da página %s", page.page_number)
+            
+            # Salva snapshot
+            precheck_snapshot = {
+                "model": config.cheap_model if config.use_cheap_precheck else None,
+                "provider": config.cheap_provider if config.use_cheap_precheck else None,
+                "has_content": has_content,
+                "content_type": content_type,
+                "content_count": content_count,
+                "rotation_detected": rotation,
+                "characteristics": characteristics,
+                "ocr_decision": "skip",
+                "ocr_reason": "text_only - texto extraído",
+                "text_extracted": html_path is not None,
+            }
+            (page_out / "precheck.json").write_text(_json_dumps(precheck_snapshot), encoding="utf-8")
+            return page_outputs, page_summary
+        
+        # Se NÃO é text_only OU convert_text_only=False, apenas pula
         logger.info(
             "⏭️  Página %s: sem conteúdo útil (has_content=%s, type=%s, count=%d) → PULANDO (sem copiar!)",
             page.page_number,

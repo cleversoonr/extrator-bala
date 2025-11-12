@@ -372,6 +372,13 @@ def main() -> None:
         logger.warning("⚠️  FORCE_REPROCESS ativado - todas as páginas serão reprocessadas")
     else:
         logger.info("✅ Checkpoint ativado - páginas já processadas serão puladas")
+    
+    # CONVERT_TEXT_ONLY: Controla se deve converter páginas text-only em HTML
+    convert_text_only = _env_flag("CONVERT_TEXT_ONLY", default=False)
+    if convert_text_only:
+        logger.info("📄 CONVERT_TEXT_ONLY ativado - páginas text-only serão convertidas em HTML (usando GPT-5)")
+    else:
+        logger.info("⏭️  CONVERT_TEXT_ONLY desativado - páginas text-only serão ignoradas")
 
     for pdf in sel:
         logger.info("Processando %s", pdf)
@@ -396,6 +403,7 @@ def main() -> None:
                 use_layout_ocr=use_layout_ocr,
                 skip_ocr_pages=skip_ocr_pages,
                 force_reprocess=force_reprocess,
+                convert_text_only=convert_text_only,
             )
             results = process_pdf_images(
                 pdf,
