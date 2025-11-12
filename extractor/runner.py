@@ -337,7 +337,7 @@ def main() -> None:
     try:
         llm_max_workers = int(os.getenv("LLM_MAX_WORKERS", "3"))
     except ValueError:
-        llm_max_workers = 3
+        llm_max_workers = 6
     llm_max_workers = max(1, llm_max_workers)
     
     # PRE-CHECK: Sempre ativo (já detectado automaticamente)

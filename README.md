@@ -72,7 +72,7 @@ OPENROUTER_API_KEY=sk-or-v1-...
 OPENAI_API_KEY=sk-...
 
 # Opcional: Paralelização
-LLM_MAX_WORKERS=3  # Até 3 páginas processadas em paralelo
+LLM_MAX_WORKERS=6  # Até 6 páginas processadas em paralelo
 ```
 
 ---
