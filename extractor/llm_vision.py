@@ -107,6 +107,18 @@ SYSTEM_MSG = (
 )
 
 PRECHECK_PROMPT = (
+    "⚠️⚠️⚠️ ATENÇÃO MÁXIMA: DETECÇÃO DE TABELAS MÚLTIPLAS ⚠️⚠️⚠️\n"
+    "\n"
+    "Se vê MÚLTIPLAS TABELAS fisicamente SEPARADAS (com espaço/linha entre elas):\n"
+    "→ Cada tabela = 1 elemento no 'count'\n"
+    "→ Exemplo: 2 blocos de tabela = count: 2 (NÃO count: 1!)\n"
+    "\n"
+    "SINAIS de tabelas SEPARADAS:\n"
+    "- Espaço VERTICAL entre blocos\n"
+    "- Headers DIFERENTES (primeira linha de cada bloco)\n"
+    "- Linha divisória grossa entre blocos\n"
+    "- Mesma coluna inicial (ex: 'Prof') mas dados diferentes\n"
+    "\n"
     "Analise esta imagem DETALHADAMENTE e identifique as características do conteúdo.\n"
     "Seja ESPECÍFICO e PRECISO - essas informações serão usadas para gerar instruções de extração.\n"
     "\n"

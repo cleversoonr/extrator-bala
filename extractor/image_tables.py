@@ -707,22 +707,26 @@ def _page_level_precheck(
         )
         return True, "unknown", 1, 0, {}
 
+    # 🔧 CORREÇÃO CRÍTICA: Converte para P&B ANTES do pre-check
+    bw_image_path = _convert_to_grayscale(image_path)
+    logger.info("🔍 Pre-check usando imagem P&B para melhor detecção")
+    
     cheap_provider = config.cheap_provider or config.provider
     logger.info(
         "🔍 Rodando pre-check rápido (%s via %s) para %s",
         config.cheap_model,
         cheap_provider or "default",
-        image_path.name,
+        bw_image_path.name,
     )
     try:
         has_content, content_type, content_count, rotation, characteristics = quick_precheck_with_cheap_llm(
-            image_path,
+            bw_image_path,  # ← USA IMAGEM P&B em vez de colorida!
             config.cheap_model,
             cheap_provider,
             config.openrouter_api_key,
             api_key=config.cheap_api_key,
             azure_endpoint=config.cheap_azure_endpoint,
-            azure_api_version=config.cheap_azure_api_version,
+            azure_api_version=config.cheap_api_version,
         )
         return has_content, content_type, content_count, rotation, characteristics
     except Exception as exc:
