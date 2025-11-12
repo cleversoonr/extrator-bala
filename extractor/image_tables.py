@@ -55,6 +55,7 @@ Se vê MÚLTIPLAS tabelas fisicamente SEPARADAS (com espaço/borda entre elas):
 4. Mesma primeira coluna (ex: "Prof") mas resto diferente
 
 **HTML `<table>` preservando estrutura:**
+- Estrutura: `<table><thead>...</thead><tbody>...</tbody></table>`
 - Células mescladas: `colspan="N"` (horizontal) ou `rowspan="N"` (vertical)
 - Cabeçalhos: `<thead>` com múltiplas linhas se necessário
 - Formatação: `<sup>`, `<sub>`, `<strong>`
@@ -68,6 +69,7 @@ Se vê MÚLTIPLAS tabelas fisicamente SEPARADAS (com espaço/borda entre elas):
 5. Se célula vazia → `<td></td>`
 6. **NÃO invente linhas vazias com `<td colspan="14"></td>`** - isso quebra a estrutura
 7. Se são tabelas SEPARADAS visualmente → crie objetos SEPARADOS no JSON
+8. 🚫 **NUNCA coloque `<th>` dentro do `<tbody>`** - headers só no `<thead>`!
 
 **EXEMPLO de 2 tabelas SEPARADAS:**
 {{
@@ -929,30 +931,49 @@ def _call_full_page_llm_with_retry(
     bw_image_path = _convert_to_grayscale(page_image_path)
     
     # Prompt ultra-específico
-    ultra_prompt = f"""⚠️⚠️⚠️ ATENÇÃO MÁXIMA ⚠️⚠️⚠️
+    ultra_prompt = f"""⚠️⚠️⚠️ ATENÇÃO MÁXIMA - VOCÊ FALHOU NA PRIMEIRA TENTATIVA ⚠️⚠️⚠️
 
-Esta página tem EXATAMENTE {content_count} TABELAS SEPARADAS.
+Esta página tem EXATAMENTE {content_count} TABELAS FISICAMENTE SEPARADAS.
 
-SEU TRABALHO: Criar {content_count} objetos SEPARADOS no array "tables".
+🚫 VOCÊ FEZ ERRADO:
+- Criou 1 objeto com headers no MEIO do <tbody>
+- Valores nas colunas ERRADAS
+- Headers misturados com dados
 
-VOCÊ ESTÁ FALHANDO se criar apenas 1 objeto!
+✅ FAÇA CORRETAMENTE:
+- Crie {content_count} objetos SEPARADOS no array "tables"
+- CADA tabela = 1 objeto com HTML COMPLETO E INDEPENDENTE
+- CADA HTML tem: <table><thead>...</thead><tbody>...</tbody></table>
+- NÃO coloque <th> dentro do <tbody>
+- NÃO misture dados de tabelas diferentes
 
 FORMATO OBRIGATÓRIO:
 {{
   "type": "table_set",
   "tables": [
-    {{"title": "Primeira tabela", "format": "html", "html": "<table>...</table>", "notes": ""}},
-    {{"title": "Segunda tabela", "format": "html", "html": "<table>...</table>", "notes": ""}}
+    {{
+      "title": "Tabela 1",
+      "format": "html",
+      "html": "<table><thead><tr><th>Prof</th><th>pH CaCl2</th>...</tr></thead><tbody><tr><td>0-20</td><td>4,99</td>...</tr></tbody></table>",
+      "notes": ""
+    }},
+    {{
+      "title": "Tabela 2", 
+      "format": "html",
+      "html": "<table><thead><tr><th>Prof</th><th>S</th><th>Zn</th>...</tr></thead><tbody><tr><td>0-20</td><td>40,36</td>...</tr></tbody></table>",
+      "notes": ""
+    }}
   ]
 }}
 
-INSTRUÇÕES:
-1. Olhe a imagem: há {content_count} blocos de tabela FISICAMENTE SEPARADOS
-2. Cada bloco = 1 entrada no array "tables"
-3. Cada entrada tem seu próprio HTML <table>...</table>
-4. NÃO crie 1 HTML gigante com linhas vazias
+REGRAS ABSOLUTAS:
+1. {content_count} objetos separados (NÃO 1 objeto!)
+2. Cada objeto tem <thead> completo no INÍCIO
+3. Cada objeto tem <tbody> completo DEPOIS do thead
+4. NÃO há <th> dentro do <tbody>
+5. Valores devem estar nas colunas CORRETAS de cada tabela
 
-IMPORTANTE: Se você retornar menos de {content_count} objetos, sua resposta será REJEITADA.
+IMPORTANTE: Sua resposta será VALIDADA. Se tiver <th> no <tbody>, será REJEITADA.
 
 Retorne APENAS JSON válido."""
     
@@ -1167,21 +1188,36 @@ def _llm_page_to_tables(
         
         # Se esperava N tabelas mas gerou apenas 1, pode ter mesclado incorretamente
         if extracted_count == 1:
-            # Verifica se a única tabela tem colunas vazias demais (sinal de mesclagem)
             single_table = _extract_tables_from_payload(payload)[0] if _extract_tables_from_payload(payload) else None
             if single_table:
                 html_content = single_table.get("html", "")
-                # Conta células vazias no HTML
+                
+                # 🚨 VALIDAÇÃO CRÍTICA: Detecta <th> no meio do <tbody> (sinal de tabelas mescladas)
+                has_th_in_tbody = "<tbody>" in html_content and html_content.find("<th", html_content.find("<tbody>")) > 0
+                
+                # Conta células vazias
                 empty_cells = html_content.count("<td></td>")
                 total_cells = html_content.count("<td")
+                empty_ratio = (empty_cells / total_cells) if total_cells > 0 else 0
                 
-                if total_cells > 0 and (empty_cells / total_cells) > 0.3:  # Mais de 30% vazias
+                # Detecta problemas
+                has_too_many_empty = empty_ratio > 0.3
+                
+                if has_th_in_tbody or has_too_many_empty:
                     logger.error(
-                        "❌ ERRO DETECTADO: Esperava %d tabelas mas gerou 1 com %.1f%% células vazias",
-                        expected_elements,
-                        (empty_cells / total_cells) * 100
+                        "❌ ERRO GRAVE DETECTADO na página %s:",
+                        page_id
                     )
-                    logger.warning("🔄 Tentando novamente com prompt ainda mais específico...")
+                    if has_th_in_tbody:
+                        logger.error("   → Headers (<th>) no meio do tbody (tabelas mescladas!)")
+                    if has_too_many_empty:
+                        logger.error(
+                            "   → %.1f%% células vazias (esperava %d tabelas, gerou 1)",
+                            empty_ratio * 100,
+                            expected_elements
+                        )
+                    
+                    logger.warning("🔄 Tentando novamente com prompt ULTRA-AGRESSIVO...")
                     
                     # Tenta novamente com prompt ultra-agressivo
                     retry_payload = _call_full_page_llm_with_retry(
@@ -1196,10 +1232,22 @@ def _llm_page_to_tables(
                     if retry_payload:
                         retry_count = len(_extract_tables_from_payload(retry_payload))
                         if retry_count == expected_elements:
-                            logger.info("✅ Retry bem-sucedido! Extraídas %d tabelas", retry_count)
-                            payload = retry_payload
+                            # Valida que as tabelas estão realmente separadas
+                            retry_tables = _extract_tables_from_payload(retry_payload)
+                            all_valid = True
+                            for idx, tbl in enumerate(retry_tables):
+                                retry_html = tbl.get("html", "")
+                                if "<tbody>" in retry_html and retry_html.find("<th", retry_html.find("<tbody>")) > 0:
+                                    logger.error("❌ Retry também tem <th> no tbody da tabela %d", idx+1)
+                                    all_valid = False
+                            
+                            if all_valid:
+                                logger.info("✅ Retry bem-sucedido! Extraídas %d tabelas VÁLIDAS", retry_count)
+                                payload = retry_payload
+                            else:
+                                logger.error("❌ Retry falhou validação. Mantendo original (com erro).")
                         else:
-                            logger.warning("⚠️ Retry também falhou. Mantendo resultado original.")
+                            logger.warning("⚠️ Retry gerou %d tabelas (esperava %d)", retry_count, expected_elements)
         
         elif extracted_count != expected_elements:
             logger.warning(
