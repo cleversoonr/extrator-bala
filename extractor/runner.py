@@ -156,7 +156,7 @@ def _ask_extraction_model(llm_cfg: dict) -> tuple:
     for i, opt in enumerate(options, 1):
         print(f"{i}. {opt[0]}")
     
-    choice = Prompt.ask("\n🧠 Escolha o modelo de extração", choices=[str(i) for i in range(1, len(options) + 1)], default="2")
+    choice = Prompt.ask("\n🧠 Escolha o modelo de extração", choices=[str(i) for i in range(1, len(options) + 1)], default="1")
     selected = options[int(choice) - 1]
     
     return selected[1], selected[2], selected[3], selected[4], selected[5]

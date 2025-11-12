@@ -102,20 +102,105 @@ def extract_images(doc: fitz.Document, out_dir: Path, pages: Sequence[int]) -> L
     return extracted
 
 
-def render_pages(doc: fitz.Document, out_dir: Path, pages: Sequence[int], dpi: int = 300) -> List[PageImage]:
-    """Render pages to PNGs for OCR. Returns list of PageImage objects."""
+def render_pages(doc: fitz.Document, out_dir: Path, pages: Sequence[int], dpi: int = 300, force: bool = False) -> List[PageImage]:
+    """
+    Render pages to PNGs for OCR. Returns list of PageImage objects.
+    
+    Args:
+        doc: PDF document
+        out_dir: Output directory for PNG files
+        pages: List of page numbers (1-based) to render
+        dpi: Resolution for rendering (default 300)
+        force: If True, re-render even if PNG already exists (default False)
+    
+    Returns:
+        List of PageImage objects (existing or newly created)
+    """
     ensure_dir(out_dir)
     mat = fitz.Matrix(dpi / 72.0, dpi / 72.0)
-    logger.info("Rasterizando %s páginas em %s dpi=%s", len(pages), out_dir, dpi)
+    
+    # Checkpoint: Separa páginas que já existem das que precisam ser renderizadas
+    pages_to_render = []
+    pages_existing = []
     res: List[PageImage] = []
+    
     for pno in pages:
+        path = out_dir / f"page-{pno:03d}.png"
+        
+        # Verifica se arquivo existe e é válido
+        if not force and path.exists() and path.stat().st_size > 0:
+            pages_existing.append(pno)
+            res.append(PageImage(pno, path))
+        else:
+            pages_to_render.append(pno)
+    
+    # Log do checkpoint
+    if pages_existing:
+        logger.info(
+            "✅ %d/%d páginas JÁ RASTERIZADAS (checkpoint) - pulando: %s",
+            len(pages_existing),
+            len(pages),
+            _format_page_range(pages_existing)
+        )
+    
+    if not pages_to_render:
+        logger.info("✅ Todas as páginas já estão rasterizadas - nenhuma renderização necessária")
+        return res
+    
+    # Renderiza apenas páginas novas
+    logger.info(
+        "🖼️  Rasterizando %d/%d páginas em %s dpi=%s: %s",
+        len(pages_to_render),
+        len(pages),
+        out_dir,
+        dpi,
+        _format_page_range(pages_to_render)
+    )
+    
+    for pno in pages_to_render:
         page = doc[pno - 1]
         pix = page.get_pixmap(matrix=mat, alpha=False)
         path = out_dir / f"page-{pno:03d}.png"
         pix.save(path.as_posix())
         res.append(PageImage(pno, path))
         logger.debug("Página %s rasterizada em %s", pno, path)
+    
     return res
+
+
+def _format_page_range(pages: List[int]) -> str:
+    """Formata lista de páginas de forma compacta (ex: 1-5, 8, 10-12)"""
+    if not pages:
+        return ""
+    
+    if len(pages) > 10:
+        # Se muitas páginas, mostra apenas range completo
+        return f"{min(pages)}-{max(pages)}"
+    
+    # Agrupa páginas consecutivas
+    sorted_pages = sorted(pages)
+    ranges = []
+    start = sorted_pages[0]
+    end = sorted_pages[0]
+    
+    for i in range(1, len(sorted_pages)):
+        if sorted_pages[i] == end + 1:
+            end = sorted_pages[i]
+        else:
+            if start == end:
+                ranges.append(str(start))
+            else:
+                ranges.append(f"{start}-{end}")
+            start = sorted_pages[i]
+            end = sorted_pages[i]
+    
+    # Adiciona último range
+    if start == end:
+        ranges.append(str(start))
+    else:
+        ranges.append(f"{start}-{end}")
+    
+    return ", ".join(ranges)
 
 
 def open_document(pdf_path: Path) -> fitz.Document:

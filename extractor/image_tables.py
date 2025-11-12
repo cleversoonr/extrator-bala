@@ -234,8 +234,7 @@ def process_pdf_images(
     results: List[Path] = []
     summary_entries: List[Dict[str, str]] = []
 
-    # SEMPRE renderiza páginas completas (sem extrair imagens embutidas)
-    logger.info("Renderizando %d páginas em DPI %d", len(page_nums), config.render_dpi)
+    # Renderiza páginas completas (checkpoint: pula páginas já renderizadas)
     page_imgs = render_pages(doc, output_dir / "pages", page_nums, dpi=config.render_dpi)
     
     # Processa páginas (em paralelo se configurado)

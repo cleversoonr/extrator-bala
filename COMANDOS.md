@@ -15,18 +15,27 @@ python -m extractor
 PYTHONUNBUFFERED=1 python -m extractor
 ```
 
-## Checkpoint de Páginas
-O sistema agora verifica automaticamente se uma página já foi processada antes de extrair novamente.
+## Checkpoint Duplo (Rasterização + Extração)
+O sistema agora verifica automaticamente em **duas etapas** para evitar reprocessamento desnecessário:
 
-**Como funciona:**
-- Se a pasta `page-XXX` existe E contém arquivos `.html` válidos → **página é pulada**
-- Se a pasta não existe OU não tem HTMLs → **página é processada**
-- Páginas com erro anterior (sem HTML) serão **reprocessadas automaticamente**
+### 1. Checkpoint de Rasterização (PNG)
+- Se `pages/page-XXX.png` existe → **pula renderização**
+- Se não existe → **renderiza do PDF**
+- Economiza tempo significativo em DPI alto (900)
+
+### 2. Checkpoint de Extração (HTML)
+- Se `page-XXX/` existe E contém `.html` válidos → **pula extração**
+- Se não existe OU sem HTMLs → **processa com LLM**
+- Páginas com erro (sem HTML) são **reprocessadas automaticamente**
 
 ### Forçar Reprocessamento
-Para reprocessar todas as páginas (ignorando checkpoint):
+Para reprocessar todas as páginas (ignorando checkpoints):
 ```bash
+# Ignora checkpoint de extração (LLM) apenas
 FORCE_REPROCESS=1 python -m extractor
+
+# Para forçar re-renderização também, delete as imagens:
+rm -rf output/NOME_PDF/pages/
 ```
 
 ## Logs e Depuração
@@ -34,10 +43,11 @@ FORCE_REPROCESS=1 python -m extractor
 # Logs em tempo real + checkpoint
 PYTHONUNBUFFERED=1 python -m extractor
 
-# Ver qual página está sendo processada ou pulada
-# Procure por:
-# ✅ Página XXX JÁ PROCESSADA (checkpoint) - pulando
-# 🔄 Página XXX será REPROCESSADA (force_reprocess=True)
+# Logs de checkpoint que você verá:
+# ✅ 95/105 páginas JÁ RASTERIZADAS (checkpoint) - pulando: 1-95
+# 🖼️  Rasterizando 10/105 páginas em output/.../pages dpi=900: 96-105
+# ✅ Página 100 JÁ PROCESSADA (checkpoint) - pulando
+# 🔄 Página 105 será REPROCESSADA (force_reprocess=True)
 ```
 
 ## Limitação de Tamanho de Imagens
