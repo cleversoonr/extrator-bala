@@ -709,20 +709,16 @@ def _page_level_precheck(
         )
         return True, "unknown", 1, 0, {}
 
-    # 🔧 CORREÇÃO CRÍTICA: Converte para P&B ANTES do pre-check
-    bw_image_path = _convert_to_grayscale(image_path)
-    logger.info("🔍 Pre-check usando imagem P&B para melhor detecção")
-    
     cheap_provider = config.cheap_provider or config.provider
     logger.info(
         "🔍 Rodando pre-check rápido (%s via %s) para %s",
         config.cheap_model,
         cheap_provider or "default",
-        bw_image_path.name,
+        image_path.name,
     )
     try:
         has_content, content_type, content_count, rotation, characteristics = quick_precheck_with_cheap_llm(
-            bw_image_path,  # ← USA IMAGEM P&B em vez de colorida!
+            image_path,  # ← Volta a usar imagem COLORIDA no pre-check
             config.cheap_model,
             cheap_provider,
             config.openrouter_api_key,
@@ -930,52 +926,33 @@ def _call_full_page_llm_with_retry(
     # Converte para P&B
     bw_image_path = _convert_to_grayscale(page_image_path)
     
-    # Prompt ultra-específico
-    ultra_prompt = f"""⚠️⚠️⚠️ ATENÇÃO MÁXIMA - VOCÊ FALHOU NA PRIMEIRA TENTATIVA ⚠️⚠️⚠️
+    # Prompt SIMPLES e DIRETO
+    ultra_prompt = f"""VOCÊ ERROU. Criou 1 objeto quando tem {content_count} tabelas.
 
-Esta página tem EXATAMENTE {content_count} TABELAS FISICAMENTE SEPARADAS.
+CORRIJA AGORA:
 
-🚫 VOCÊ FEZ ERRADO:
-- Criou 1 objeto com headers no MEIO do <tbody>
-- Valores nas colunas ERRADAS
-- Headers misturados com dados
-
-✅ FAÇA CORRETAMENTE:
-- Crie {content_count} objetos SEPARADOS no array "tables"
-- CADA tabela = 1 objeto com HTML COMPLETO E INDEPENDENTE
-- CADA HTML tem: <table><thead>...</thead><tbody>...</tbody></table>
-- NÃO coloque <th> dentro do <tbody>
-- NÃO misture dados de tabelas diferentes
-
-FORMATO OBRIGATÓRIO:
 {{
   "type": "table_set",
   "tables": [
     {{
-      "title": "Tabela 1",
+      "title": "Tabela Superior",
       "format": "html",
-      "html": "<table><thead><tr><th>Prof</th><th>pH CaCl2</th>...</tr></thead><tbody><tr><td>0-20</td><td>4,99</td>...</tr></tbody></table>",
-      "notes": ""
+      "html": "<table><thead>...</thead><tbody>...</tbody></table>"
     }},
     {{
-      "title": "Tabela 2", 
+      "title": "Tabela Inferior",
       "format": "html",
-      "html": "<table><thead><tr><th>Prof</th><th>S</th><th>Zn</th>...</tr></thead><tbody><tr><td>0-20</td><td>40,36</td>...</tr></tbody></table>",
-      "notes": ""
+      "html": "<table><thead>...</thead><tbody>...</tbody></table>"
     }}
   ]
 }}
 
-REGRAS ABSOLUTAS:
-1. {content_count} objetos separados (NÃO 1 objeto!)
-2. Cada objeto tem <thead> completo no INÍCIO
-3. Cada objeto tem <tbody> completo DEPOIS do thead
-4. NÃO há <th> dentro do <tbody>
-5. Valores devem estar nas colunas CORRETAS de cada tabela
+{content_count} tabelas na imagem = {content_count} objetos no JSON.
 
-IMPORTANTE: Sua resposta será VALIDADA. Se tiver <th> no <tbody>, será REJEITADA.
+Tabela 1 = bloco superior (primeiras linhas de dados).
+Tabela 2 = bloco inferior (últimas linhas de dados).
 
-Retorne APENAS JSON válido."""
+SEPARE as tabelas. NÃO junte em 1 objeto."""
     
     try:
         return call_openai_vision_json(
@@ -1036,34 +1013,34 @@ Retorne TODAS as {content_count} elementos como entradas separadas no array "tab
         count_desc = _format_count_description("table", content_count or 1)
         base_prompt = PAGE_TABLE_PROMPT.format(count_desc=count_desc)
         
-        # 🔧 SOLUÇÃO 2: Prompt ultra-específico quando há múltiplas tabelas
+        # 🔧 SOLUÇÃO 2: Prompt SIMPLES e DIRETO quando há múltiplas tabelas
         if content_count and content_count > 1:
-            base_prompt += f"""
+            base_prompt = f"""Você vê {content_count} TABELAS SEPARADAS nesta imagem.
 
-⚠️⚠️⚠️ ATENÇÃO CRÍTICA ⚠️⚠️⚠️
+CRIE {content_count} OBJETOS SEPARADOS:
 
-Esta página tem EXATAMENTE {content_count} TABELAS FISICAMENTE SEPARADAS.
-
-**VOCÊ DEVE:**
-1. Criar {content_count} objetos SEPARADOS no array "tables"
-2. CADA tabela = 1 objeto com seu próprio HTML
-3. NÃO juntar tabelas diferentes em um único HTML
-4. NÃO criar linhas vazias para separar seções
-
-**FORMATO OBRIGATÓRIO:**
 {{
   "type": "table_set",
   "tables": [
-    {{"title": "Tabela 1", "format": "html", "html": "<table>...</table>", "notes": ""}},
-    {{"title": "Tabela 2", "format": "html", "html": "<table>...</table>", "notes": ""}}
-    // ... até {content_count} objetos
+    {{
+      "title": "Tabela 1",
+      "format": "html",
+      "html": "<table><thead><tr><th>Col1</th><th>Col2</th></tr></thead><tbody><tr><td>val1</td><td>val2</td></tr></tbody></table>"
+    }},
+    {{
+      "title": "Tabela 2",
+      "format": "html",
+      "html": "<table><thead><tr><th>ColA</th><th>ColB</th></tr></thead><tbody><tr><td>valA</td><td>valB</td></tr></tbody></table>"
+    }}
   ]
 }}
 
-🚫 ERRADO: 1 objeto com HTML gigante contendo todas as tabelas
-✅ CORRETO: {content_count} objetos, cada um com seu próprio HTML
+CADA objeto = 1 tabela completa da imagem.
+Tabela 1 = bloco superior.
+Tabela 2 = bloco inferior.
 
-Se você criar apenas 1 objeto quando existem {content_count} tabelas, a extração FALHARÁ."""
+NÃO junte em 1 objeto.
+{content_count} tabelas = {content_count} objetos."""
     
     # PROMPT PERSONALIZADO: Gera instruções específicas baseadas nas características
     if characteristics:
