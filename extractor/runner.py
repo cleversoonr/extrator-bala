@@ -147,7 +147,7 @@ def _ask_extraction_model(llm_cfg: dict) -> tuple:
     if llm_cfg.get("provider") == "azure":
         az_pre_ep = _env_any("AZURE_OPENAI_PRECHECK_ENDPOINT", "AZURE_GPT41_ENDPOINT")
         az_pre_key = _env_any("AZURE_OPENAI_PRECHECK_API_KEY", "AZURE_GPT41_API_KEY")
-        az_pre_dep = _env_any("AZURE_OPENAI_PRECHECK_DEPLOYMENT", "AZURE_GPT41_DEPLOYMENT", default="gpt-4o")
+        az_pre_dep = _env_any("AZURE_OPENAI_PRECHECK_DEPLOYMENT", "AZURE_GPT41_DEPLOYMENT", default="gpt-4.1")
         az_pre_ver = _env_any("AZURE_OPENAI_PRECHECK_API_VERSION", "AZURE_GPT41_API_VERSION", default="2025-03-01-preview")
         
         if az_pre_ep and az_pre_key:

@@ -728,7 +728,7 @@ def _page_level_precheck(
             config.openrouter_api_key,
             api_key=config.cheap_api_key,
             azure_endpoint=config.cheap_azure_endpoint,
-            azure_api_version=config.cheap_api_version,
+            azure_api_version=config.cheap_azure_api_version,  # ← FIX: nome correto do atributo
         )
         return has_content, content_type, content_count, rotation, characteristics
     except Exception as exc:
