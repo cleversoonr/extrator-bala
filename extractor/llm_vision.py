@@ -7,8 +7,6 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 import httpx
-import cv2
-import numpy as np
 from openai import OpenAI, AzureOpenAI
 from dotenv import load_dotenv
 
@@ -23,320 +21,37 @@ SYSTEM_MSG = (
     "Se for uma tabela, retorne {type:'table', table:{rows:[...]}}. "
     "Se for um gráfico (linha, barra, dispersão, ternário etc.), retorne {type:'chart', chart:{...}} com as séries numéricas. "
     "Para eixos categóricos (ex. datas), mantenha os rótulos como strings em x.values. "
-    "\n"
-    "⚠️ PRINCÍPIO FUNDAMENTAL: Extraia EXATAMENTE como está na imagem. NÃO force padrões. "
-    "Sua única fonte de verdade é a IMAGEM + LEGENDA que você está vendo. "
-    "Para GRÁFICOS: "
-    "- Leia TODOS os valores numéricos visíveis dos pontos. "
-    "- Use null apenas se um ponto específico realmente não existe para aquela coordenada X. "
-    "\n"
-    "Para TABELAS: "
-    "\n"
-    "🔄 **IMPORTANTE - PRESERVE A ESTRUTURA ORIGINAL**: "
-    "- Se a coluna com nomes das linhas está à DIREITA na imagem → mantenha à DIREITA no HTML "
-    "- Se a coluna com nomes das linhas está à ESQUERDA na imagem → mantenha à ESQUERDA no HTML "
-    "- NÃO reorganize a tabela - transcreva EXATAMENTE na ordem que você vê "
-    "- O sistema vai ajustar a ordem depois se necessário "
-    "\n"
-    "📝 **FOCO NO CONTEÚDO, NÃO NA APARÊNCIA**: "
-    "- Ignore cores, ignore design - LEIA O TEXTO "
-    "- Se vê 'C' escrito → `<td>C</td>` "
-    "- Se vê 'CL' escrito → `<td>CL</td>` (NÃO confunda com 'C' ou 'I'!) "
-    "- Se vê 'I' escrito → `<td>I</td>` "
-    "- Se vê número → transcreva o número "
-    "- Se vê texto → transcreva o texto "
-    "- Se célula vazia (sem nada escrito) → `<td></td>` "
-    "\n"
-    "⚠️  **ATENÇÃO ESPECIAL - CÉLULAS COM 'CL'**: "
-    "- 'CL' são DUAS letras juntas: 'C' + 'L' "
-    "- Se ver só 'C' (uma letra sozinha) → escreva 'C' "
-    "- Se ver 'CL' (duas letras) → escreva 'CL' "
-    "- Se ver 'I' (uma letra) → escreva 'I' "
-    "- AMPLIE o zoom ao MÁXIMO para ver se é 'C' ou 'CL' "
-    "- NÃO confunda 'CL' com 'C' nem com 'I' "
-    "\n"
-    "🚫 **PROIBIDO**: "
-    "- Assumir conteúdo baseado em cores/padrões "
-    "- Assumir simetria (célula [i,j] ≠ célula [j,i]) "
-    "- Copiar linha/coluna inteira "
-    "- Deixar tabela vazia sem ler todas as células "
-    "- Criar linhas vazias com `<td colspan=\"X\"></td>` para separar seções "
-    "- Juntar tabelas FISICAMENTE SEPARADAS em um único HTML "
-    "\n"
-    "🏗️ **ESTRUTURA HTML CORRETA**: "
-    "- Use `<thead>` para cabeçalhos (pode ter múltiplas linhas `<tr>`) "
-    "- Use `<tbody>` para dados "
-    "- Use `colspan=\"N\"` quando célula ocupa N colunas "
-    "- Use `rowspan=\"N\"` quando célula ocupa N linhas "
-    "- NÃO invente linhas vazias - cada `<tr>` deve ter conteúdo real "
-    "\n"
-    "🚫 **ERRO CRÍTICO - NÃO FAÇA**: "
-    "- NÃO coloque `<th>` dentro do `<tbody>` "
-    "- Todos os `<th>` devem estar dentro do `<thead>` "
-    "- Se uma linha tem `<th>`, ela está no `<thead>`, NÃO no `<tbody>` "
-    "- Dados (números/texto) usam `<td>`, headers usam `<th>` "
-    "\n"
-    "# A TABELA DEVE SER IDENTICA A IMAGEM. COM MESMOS VALORES, TEXTOS E AGRUPAMENTOS DE CELULAS."
-    "# NÃO RETORNE COLUNAS SEM CELULAS, OU FORA DE ORDEM. DEVE SER EXATAMENTE IGUAL A IMAGEM."
+    "Para valores incertos, use null. Não invente dados além do que é legível."
 )
 
 PRECHECK_PROMPT = (
-    "CONTE quantas tabelas você vê.\n"
+    "Analise esta imagem rapidamente. Retorne JSON: "
+    "{'has_content': true/false, 'content_type': 'table'|'chart'|'mixed'|'text_only'|'none', 'count': número}. "
+    "\n\n"
+    "IMPORTANTE: Campo 'count' = quantas tabelas/gráficos DISTINTOS você vê na página.\n"
+    "- Se vê 1 tabela → count=1\n"
+    "- Se vê 2 tabelas separadas (ex: Tabela 3 e Tabela 4) → count=2\n"
+    "- Se vê 3+ tabelas/gráficos → count=3 (ou mais)\n"
+    "- Se não tem conteúdo útil → count=0\n"
     "\n"
-    "REGRA SIMPLES:\n"
-    "- 1 bloco de dados = count: 1\n"
-    "- 2 blocos separados = count: 2\n"
-    "- 3 blocos separados = count: 3\n"
+    "Regras:\n"
+    "- Se tiver APENAS tabela(s), content_type='table'\n"
+    "- Se tiver APENAS gráfico(s), content_type='chart'\n"
+    "- Se tiver TABELA + GRÁFICO juntos, content_type='mixed'\n"
+    "- Se for APENAS texto corrido sem tabelas/gráficos, has_content=false, content_type='text_only', count=0\n"
+    "- Se não tiver conteúdo útil, has_content=false, content_type='none', count=0\n"
     "\n"
-    "BLOCOS SEPARADOS têm:\n"
-    "- Espaço VERTICAL entre eles\n"
-    "- Headers DIFERENTES\n"
-    "- OU mesma primeira coluna mas resto diferente\n"
-    "\n"
-    "EXEMPLO: Se vê tabela com (Prof, pH, MO...) E outra tabela com (Prof, S, Zn...)\n"
-    "→ São 2 BLOCOS SEPARADOS → count: 2\n"
-    "\n"
-    "Analise esta imagem e conte os blocos de tabela.\n"
-    "\n"
-    "Retorne JSON:\n"
-    "{\n"
-    "  'has_content': true/false,\n"
-    "  'content_type': 'table'|'chart'|'mixed'|'text_only'|'none',\n"
-    "  'count': número,\n"
-    "  'rotation': 0|90|180|270,\n"
-    "  'elements': [\n"
-    "    {\n"
-    "      'type': 'table'|'chart',\n"
-    "      'description': 'Descrição específica do elemento',\n"
-    "      'structure': {\n"
-    "        // Para TABELAS:\n"
-    "        'table_structure': 'compatibility_matrix'|'data_table'|'list'|'comparison'|'other',\n"
-    "        'rows': número aproximado,\n"
-    "        'columns': número aproximado,\n"
-    "        'has_header': true/false,\n"
-    "        'has_colors': true/false,\n"
-    "        'color_meaning': 'descrição do que as cores representam (se aplicável)',\n"
-    "        'has_merged_cells': true/false,  ⚠️ Olhe: células que ocupam MAIS de 1 coluna/linha\n"
-    "        'merged_cells_location': 'header'|'body'|'both'|'none',\n"
-    "        'diagonal_empty': true/false,  ⚠️ CRÍTICO para matrizes: se células da diagonal (onde linha = coluna) estão VAZIAS/CINZAS sem texto\n"
-    "        'cell_content_type': 'symbols'|'numbers'|'text'|'mixed',\n"
-    "        'cell_content_description': 'o que está escrito nas células',\n"
-    "        'has_legend': true/false,\n"
-    "        'legend_content': 'conteúdo da legenda (se tiver)',\n"
-    "        // Para GRÁFICOS:\n"
-    "        'chart_type': 'bar'|'line'|'scatter'|'pie'|'ternary'|'heatmap'|'other',\n"
-    "        'has_multiple_series': true/false,\n"
-    "        'axis_types': 'numeric'|'categorical'|'date'|'mixed',\n"
-    "        'has_grid': true/false,\n"
-    "        'data_points_visible': true/false\n"
-    "      }\n"
-    "    }\n"
-    "  ]\n"
-    "}\n"
-    "\n"
-    "**INSTRUÇÕES CRÍTICAS:**\n"
-    "\n"
-    "1. **count**: Número EXATO de elementos (tabelas + gráficos)\n"
-    "   ⚠️ ATENÇÃO: Se vê MÚLTIPLAS tabelas FISICAMENTE SEPARADAS (com espaço/borda entre elas):\n"
-    "   - Cada tabela separada = 1 elemento no count\n"
-    "   - Exemplo: 2 tabelas separadas verticalmente = count: 2\n"
-    "   - Sinais de separação: espaço vertical significativo, bordas completas, headers diferentes\n"
-    "\n"
-    "2. **rotation**: Olhe o TÍTULO PRINCIPAL da página (ex: 'Anexo 21', 'Compatibilidade de fertilizantes').\n"
-    "   NÃO olhe headers de tabela/colunas (podem estar na vertical por design).\n"
-    "   \n"
-    "   Em qual ÂNGULO está o TÍTULO PRINCIPAL ATUALMENTE?\n"
-    "   - Título horizontal (normal, legível)? → rotation = 0\n"
-    "   - Título virado 90° (à direita)? → rotation = 90\n"
-    "   - Título de cabeça pra baixo? → rotation = 180\n"
-    "   - Título virado 270° (à esquerda)? → rotation = 270\n"
-    "   \n"
-    "   ⚠️ Informe a POSIÇÃO ATUAL do título (onde está agora), não a correção necessária.\n"
-    "\n"
-    "3. **elements**: Array com CADA elemento detectado\n"
-    "   - Se tem 2 tabelas SEPARADAS → 2 objetos no array (mesmo que compartilhem primeira coluna)\n"
-    "   - Se tem 1 tabela + 1 gráfico → 2 objetos no array\n"
-    "   - Cada objeto deve ter descrição ESPECÍFICA daquele elemento\n"
-    "\n"
-    "4. **description**: Descreva o que VÊ na imagem (ex: 'Matriz 21x21 com células coloridas verde/amarelo/vermelho')\n"
-    "\n"
-    "5. **color_meaning**: Se células têm cores, descreva o que representam baseado na legenda ou contexto visual\n"
-    "\n"
-    "6. **cell_content_description**: Descreva o que está ESCRITO nas células (ex: 'Letras C, CL e I', 'Números decimais', 'Nomes de fertilizantes')\n"
-    "\n"
-    "7. **legend_content**: Se tem legenda, transcreva o conteúdo (ex: 'C = Compatível, CL = Compatibilidade Limitada, I = Incompatível')\n"
-    "\n"
-    "8. **diagonal_empty** (CRÍTICO para MATRIZES): Em matrizes onde linhas e colunas têm os MESMOS nomes (matriz de compatibilidade):\n"
-    "   - Olhe as células onde linha = coluna (diagonal principal)\n"
-    "   - Essas células estão VAZIAS/CINZAS sem nenhum texto/símbolo? → diagonal_empty = true\n"
-    "   - Têm texto/símbolo (mesmo que seja '-' ou outro)? → diagonal_empty = false\n"
-    "\n"
-    "**EXEMPLO 1 (tabela única):**\n"
-    "{\n"
-    "  'has_content': true,\n"
-    "  'content_type': 'table',\n"
-    "  'count': 1,\n"
-    "  'rotation': 0,\n"
-    "  'elements': [{\n"
-    "    'type': 'table',\n"
-    "    'description': 'Matriz 21x21 simétrica com células coloridas em verde, amarelo e vermelho',\n"
-    "    'structure': {\n"
-    "      'table_structure': 'compatibility_matrix',\n"
-    "      'rows': 21,\n"
-    "      'columns': 21,\n"
-    "      'has_header': true,\n"
-    "      'has_colors': true,\n"
-    "      'color_meaning': 'Verde = compatível, Amarelo = compatibilidade limitada, Vermelho = incompatível',\n"
-    "      'has_merged_cells': false,\n"
-    "      'diagonal_empty': true,\n"
-    "      'cell_content_type': 'symbols',\n"
-    "      'cell_content_description': 'Letras C (células verdes), CL (células amarelas), I (células vermelhas)',\n"
-    "      'has_legend': true,\n"
-    "      'legend_content': '[C] Compatíveis, [CL] Compatibilidade limitada, [I] Incompatíveis'\n"
-    "    }\n"
-    "  }]\n"
-    "}\n"
-    "\n"
-    "**EXEMPLO 2 (múltiplas tabelas separadas):**\n"
-    "{\n"
-    "  'has_content': true,\n"
-    "  'content_type': 'table',\n"
-    "  'count': 2,\n"
-    "  'rotation': 0,\n"
-    "  'elements': [\n"
-    "    {\n"
-    "      'type': 'table',\n"
-    "      'description': 'Tabela superior com dados de pH, MO, P, K, Ca, Mg, Al, etc.',\n"
-    "      'structure': {\n"
-    "        'table_structure': 'data_table',\n"
-    "        'rows': 2,\n"
-    "        'columns': 14,\n"
-    "        'has_header': true,\n"
-    "        'has_colors': true,\n"
-    "        'cell_content_type': 'numbers',\n"
-    "        'cell_content_description': 'Valores numéricos de análise de solo'\n"
-    "      }\n"
-    "    },\n"
-    "    {\n"
-    "      'type': 'table',\n"
-    "      'description': 'Tabela inferior com micronutrientes S, Zn, B, Cu, Mn, Fe e relações',\n"
-    "      'structure': {\n"
-    "        'table_structure': 'data_table',\n"
-    "        'rows': 2,\n"
-    "        'columns': 12,\n"
-    "        'has_header': true,\n"
-    "        'cell_content_type': 'numbers',\n"
-    "        'cell_content_description': 'Valores numéricos de micronutrientes'\n"
-    "      }\n"
-    "    }\n"
-    "  ]\n"
-    "}"
+    "Exemplos:\n"
+    "- Página com 'Tabela 3' e 'Tabela 4' → {'has_content': true, 'content_type': 'table', 'count': 2}\n"
+    "- Página com 1 gráfico → {'has_content': true, 'content_type': 'chart', 'count': 1}\n"
+    "- Página com 1 tabela + 1 gráfico → {'has_content': true, 'content_type': 'mixed', 'count': 2}\n"
+    "- Página só com texto → {'has_content': false, 'content_type': 'text_only', 'count': 0}"
 )
 
 
-def _img_to_data_url(path: Path, max_size_mb: float = 15.0) -> str:
-    """
-    Converte imagem para data URL com verificação de tamanho.
-    Se a imagem em base64 exceder max_size_mb, faz downscale automático.
-    
-    Args:
-        path: Caminho para a imagem
-        max_size_mb: Tamanho máximo em MB (padrão 15MB, Azure OpenAI aceita até 20MB)
-    
-    Returns:
-        Data URL da imagem (possivelmente redimensionada)
-    """
-    max_size_bytes = int(max_size_mb * 1024 * 1024)
-    
-    # Tenta converter diretamente primeiro
-    img_bytes = path.read_bytes()
-    b64 = base64.b64encode(img_bytes).decode("ascii")
-    
-    # Base64 adiciona ~33% de overhead, então o tamanho final é maior que o arquivo original
-    b64_size = len(b64)
-    
-    if b64_size <= max_size_bytes:
-        # Imagem OK, retorna direto
-        return f"data:image/{path.suffix[1:] or 'png'};base64,{b64}"
-    
-    # Imagem muito grande, precisa fazer downscale
-    logger.warning(
-        "⚠️  Imagem muito grande: %.1f MB em base64 (limite %.1f MB). Fazendo downscale...",
-        b64_size / (1024 * 1024),
-        max_size_mb
-    )
-    
-    # Carrega imagem com OpenCV
-    img = cv2.imread(str(path))
-    if img is None:
-        logger.error("Falha ao carregar imagem para downscale, usando original")
-        return f"data:image/{path.suffix[1:] or 'png'};base64,{b64}"
-    
-    h, w = img.shape[:2]
-    original_size = (w, h)
-    
-    # Calcula fator de redução necessário
-    # Como base64 tem overhead, precisamos reduzir mais que a proporção direta
-    reduction_factor = (max_size_bytes / b64_size) ** 0.5  # Raiz quadrada porque área é w*h
-    
-    # Aplica redução iterativa até ficar abaixo do limite
-    quality = 85
-    max_attempts = 5
-    
-    for attempt in range(max_attempts):
-        # Calcula novo tamanho
-        new_w = int(w * reduction_factor)
-        new_h = int(h * reduction_factor)
-        
-        # Garante mínimo de 800px no lado menor para manter legibilidade
-        min_side = min(new_w, new_h)
-        if min_side < 800:
-            scale = 800 / min_side
-            new_w = int(new_w * scale)
-            new_h = int(new_h * scale)
-        
-        # Redimensiona
-        resized = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
-        
-        # Codifica como JPEG com qualidade ajustável
-        encode_params = [cv2.IMWRITE_JPEG_QUALITY, quality]
-        success, buffer = cv2.imencode('.jpg', resized, encode_params)
-        
-        if not success:
-            logger.error("Falha ao encodar imagem redimensionada")
-            break
-        
-        # Converte para base64
-        b64_new = base64.b64encode(buffer.tobytes()).decode("ascii")
-        b64_new_size = len(b64_new)
-        
-        logger.info(
-            "📐 Tentativa %d: %dx%d → %dx%d | %.1f MB → %.1f MB (qualidade %d%%)",
-            attempt + 1,
-            w, h, new_w, new_h,
-            b64_size / (1024 * 1024),
-            b64_new_size / (1024 * 1024),
-            quality
-        )
-        
-        if b64_new_size <= max_size_bytes:
-            # Sucesso!
-            logger.info("✅ Downscale concluído: %dx%d → %dx%d", w, h, new_w, new_h)
-            return f"data:image/jpeg;base64,{b64_new}"
-        
-        # Ainda muito grande, reduz mais
-        reduction_factor *= 0.9  # Reduz mais 10%
-        quality = max(60, quality - 10)  # Reduz qualidade
-    
-    # Se chegou aqui, não conseguiu reduzir o suficiente
-    # Retorna a última versão reduzida mesmo que ainda grande
-    logger.error(
-        "❌ Não foi possível reduzir imagem para %.1f MB após %d tentativas. Usando última versão (%.1f MB)",
-        max_size_mb,
-        max_attempts,
-        b64_new_size / (1024 * 1024)
-    )
-    return f"data:image/jpeg;base64,{b64_new}"
+def _img_to_data_url(path: Path) -> str:
+    b64 = base64.b64encode(Path(path).read_bytes()).decode("ascii")
+    return f"data:image/{path.suffix[1:] or 'png'};base64,{b64}"
 
 
 def quick_precheck_with_cheap_llm(
@@ -348,21 +63,13 @@ def quick_precheck_with_cheap_llm(
     api_key: Optional[str] = None,
     azure_endpoint: Optional[str] = None,
     azure_api_version: Optional[str] = None,
-) -> Tuple[bool, str, int, int, dict]:
+) -> Tuple[bool, str, int]:
     """
-    Verificação rápida com LLM barata: retorna se tem conteúdo útil + características.
-    Retorna: (has_content: bool, content_type: str, count: int, rotation: int, characteristics: dict)
+    Verificação rápida com LLM barata: retorna se tem conteúdo útil.
+    Retorna: (has_content: bool, content_type: str, count: int)
     count = quantas tabelas/gráficos distintos na página
-    rotation = graus de rotação detectados (0, 90, 180, 270)
-    characteristics = dict com tipo de tabela, complexidade, etc
     """
     try:
-        logger.info(
-            "⚡ Chamando pre-check LLM (%s via %s) para %s",
-            cheap_model,
-            cheap_provider or "default",
-            image_path.name,
-        )
         payload = call_openai_vision_json(
             image_path,
             model=cheap_model,
@@ -377,96 +84,44 @@ def quick_precheck_with_cheap_llm(
 
         if not payload:
             logger.debug("Pre-check: payload vazio, assumindo sem conteúdo")
-            return False, "none", 0, 0, {}
+            return False, "none", 0
 
         logger.info(
-            "🤖 Pre-check (%s): resposta recebida",
+            "🤖 Pre-check (%s): resposta recebida -> %s",
             cheap_model,
+            json.dumps(payload, ensure_ascii=False),
         )
 
         has_content = payload.get("has_content")
         content_type = payload.get("content_type", "none")
-        count = payload.get("count", 1)
-        rotation = payload.get("rotation", 0)
-        elements = payload.get("elements", [])
-        
-        # Log detalhado de cada elemento detectado
-        if elements:
-            for idx, elem in enumerate(elements, 1):
-                elem_type = elem.get("type")
-                description = elem.get("description", "")
-                structure = elem.get("structure", {})
-                
-                logger.info(
-                    "📊 Elemento %d/%d: %s - %s",
-                    idx,
-                    len(elements),
-                    elem_type,
-                    description[:80] + "..." if len(description) > 80 else description
-                )
-                
-                if elem_type == "table":
-                    logger.info(
-                        "   └─ Estrutura: %s | %dx%d | Cores: %s | Legenda: %s",
-                        structure.get("table_structure", "?"),
-                        structure.get("rows", 0),
-                        structure.get("columns", 0),
-                        structure.get("has_colors", False),
-                        structure.get("has_legend", False)
-                    )
-                elif elem_type == "chart":
-                    logger.info(
-                        "   └─ Tipo: %s | Séries múltiplas: %s",
-                        structure.get("chart_type", "?"),
-                        structure.get("has_multiple_series", False)
-                    )
-        
-        # Compatibilidade com código antigo: cria dict 'characteristics' com primeiro elemento
-        characteristics = {}
-        if elements:
-            first_elem = elements[0]
-            characteristics = {
-                "elements": elements,  # Array completo
-                "description": first_elem.get("description", ""),
-                **first_elem.get("structure", {})
-            }
-        
+        count = payload.get("count", 1)  # Padrão 1 se não especificado
+
         logger.info(
-            "Pre-check resumo → has_content=%s | type=%s | count=%s | rotation=%s°",
+            "Pre-check resumo → has_content=%s | type=%s | count=%s",
             has_content,
             content_type,
             count,
-            rotation,
         )
 
         # Se has_content é False ou content_type é text_only/none, não tem conteúdo útil
         if has_content is False or content_type in ("text_only", "none"):
-            logger.info("Pre-check: SEM conteúdo útil")
-            return False, str(content_type), 0, int(rotation) if isinstance(rotation, (int, float)) else 0, {}
+            logger.info("Pre-check LLM barata: SEM conteúdo útil (has_content=%s, type=%s, count=%s)", 
+                       has_content, content_type, count)
+            return False, str(content_type), 0
         
         # Se has_content é True ou content_type é table/chart/mixed, tem conteúdo
         if has_content is True or content_type in ("table", "chart", "mixed"):
-            logger.info("Pre-check: TEM conteúdo útil")
-            return (
-                True, 
-                str(content_type), 
-                int(count) if isinstance(count, (int, float)) else 1, 
-                int(rotation) if isinstance(rotation, (int, float)) else 0,
-                characteristics
-            )
+            logger.info("Pre-check LLM barata: TEM conteúdo útil (has_content=%s, type=%s, count=%s)", 
+                       has_content, content_type, count)
+            return True, str(content_type), int(count) if isinstance(count, (int, float)) else 1
         
         # Caso ambíguo: prossegue (não bloqueia)
-        logger.warning("Pre-check: resposta ambígua, prosseguindo")
-        return (
-            True, 
-            str(content_type), 
-            int(count) if isinstance(count, (int, float)) else 1, 
-            int(rotation) if isinstance(rotation, (int, float)) else 0,
-            characteristics
-        )
+        logger.warning("Pre-check LLM barata: resposta ambígua (has_content=%s, type=%s, count=%s), prosseguindo", 
+                      has_content, content_type, count)
+        return True, str(content_type), int(count) if isinstance(count, (int, float)) else 1
     except Exception as e:
-        logger.warning("Erro no pre-check: %s. Prosseguindo.", e)
-        return True, "unknown", 1, 0, {}  # Em caso de erro, prossegue
+        logger.warning("Erro no pre-check com LLM barata: %s. Prosseguindo com GPT-5.", e)
+        return True, "unknown", 1  # Em caso de erro, prossegue (não bloqueia)
 
 
 def call_openai_vision_json(
@@ -512,7 +167,7 @@ def call_openai_vision_json(
             if not openrouter_api_key:
                 raise RuntimeError("Defina OPENROUTER_API_KEY para usar OpenRouter.")
             logger.info("Chamando OpenRouter modelo=%s", model)
-            http_client = httpx.Client(timeout=300.0)  # 5 minutos para páginas complexas
+            http_client = httpx.Client(timeout=180.0)  # 3 minutos para imagens grandes
             client = OpenAI(
                 api_key=openrouter_api_key,
                 base_url="https://openrouter.ai/api/v1",
@@ -527,7 +182,7 @@ def call_openai_vision_json(
                 raise RuntimeError("Defina AZURE_OPENAI_ENDPOINT para usar Azure OpenAI.")
             azure_api_version = azure_api_version or os.getenv("AZURE_OPENAI_API_VERSION", "2025-03-01-preview")
             logger.info("Chamando Azure OpenAI deployment=%s endpoint=%s", model, azure_endpoint)
-            http_client = httpx.Client(timeout=300.0)  # 5 minutos para páginas complexas
+            http_client = httpx.Client(timeout=180.0)  # 3 minutos para imagens grandes
             client = AzureOpenAI(
                 api_key=api_key,
                 azure_endpoint=azure_endpoint,
@@ -539,7 +194,7 @@ def call_openai_vision_json(
             if not api_key:
                 raise RuntimeError("Defina OPENAI_API_KEY, AZURE_OPENAI_API_KEY ou OPENROUTER_API_KEY para usar o fallback LLM.")
             logger.info("Chamando OpenAI público modelo=%s", model)
-            http_client = httpx.Client(timeout=300.0)  # 5 minutos para páginas complexas
+            http_client = httpx.Client(timeout=180.0)  # 3 minutos para imagens grandes
             client = OpenAI(api_key=api_key, http_client=http_client)
     finally:
         # Restaura variáveis de ambiente
@@ -591,14 +246,6 @@ def call_openai_vision_json(
             try:
                 payload = json.loads(txt)
                 
-                # 🐛 DEBUG: Salva resposta RAW do LLM para debug
-                try:
-                    debug_path = image_path.parent / f"{image_path.stem}-llm-response.json"
-                    debug_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
-                    logger.info("💾 Resposta LLM salva em: %s", debug_path.name)
-                except Exception as e:
-                    logger.debug("Falha ao salvar debug JSON: %s", e)
-                
                 # Valida o payload
                 valid, msg_error = _validate_payload(payload)
                 if valid:
@@ -611,31 +258,13 @@ def call_openai_vision_json(
                         return payload
             except json.JSONDecodeError as e:
                 logger.warning("Erro ao parsear JSON na tentativa %s: %s", attempt + 1, e)
-                # Salva texto bruto se não for JSON válido
-                try:
-                    debug_path = image_path.parent / f"{image_path.stem}-llm-response-raw.txt"
-                    debug_path.write_text(txt, encoding="utf-8")
-                    logger.warning("💾 Texto bruto salvo em: %s", debug_path.name)
-                except Exception:
-                    pass
                 if attempt == max_retries:
                     return None
         
         except Exception as e:
-            # Tratamento especial para timeout
-            if "timeout" in str(e).lower() or "timed out" in str(e).lower():
-                logger.error("⏱️  Timeout na tentativa %s/%s (página muito complexa)", attempt + 1, max_retries + 1)
-                if attempt < max_retries:
-                    logger.info("⏭️  Tentando novamente em 5 segundos...")
-                    import time
-                    time.sleep(5)  # Espera 5s antes de retry
-                else:
-                    logger.error("❌ Timeout após %s tentativas. Página será pulada.", max_retries + 1)
-                    raise
-            else:
-                logger.exception("Erro na chamada à LLM na tentativa %s", attempt + 1)
-                if attempt == max_retries:
-                    raise
+            logger.exception("Erro na chamada à LLM na tentativa %s", attempt + 1)
+            if attempt == max_retries:
+                raise
     
     return None
 

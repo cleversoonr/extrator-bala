@@ -332,6 +332,7 @@ def _save_text_html(
         }}
         li {{
             margin-bottom: 8px;
+            color: #333;
         }}
         blockquote {{
             border-left: 4px solid #3498db;

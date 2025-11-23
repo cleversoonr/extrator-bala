@@ -3,6 +3,7 @@ pymupdf==1.24.9
 pillow==10.4.0
 opencv-python==4.10.0.84
 numpy==1.26.4
+pytesseract==0.3.10
 paddleocr==2.8.1
 paddlepaddle==2.6.1
 
@@ -11,7 +12,6 @@ pandas==2.2.3
 openpyxl==3.1.5
 lxml>=5.0.0  # Para pandas.read_html() parsear tabelas HTML
 html5lib>=1.1  # Parser alternativo para HTML
-beautifulsoup4>=4.12.0  # Para manipulação de HTML (correção de colunas)
 
 # LLM e configuração
 openai>=1.54.0
